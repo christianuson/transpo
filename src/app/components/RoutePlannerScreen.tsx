@@ -2,10 +2,10 @@ import { useMemo, useState } from "react";
 import { Map as MapIcon, Search } from "lucide-react";
 import type { Vehicle, VehicleType } from "../App";
 import { GOLDEN_ROUTE_GROUPS, GOLDEN_ROUTE_VEHICLES } from "../data/routes";
-import busIcon from "../assets/bus.png";
-import jeepneyIcon from "../assets/jeepney.png";
-import trainIcon from "../assets/train.png";
-import uvIcon from "../assets/uv.png";
+import busIcon from "../assets/bus-inverted.png";
+import jeepneyIcon from "../assets/jeepney-inverted.png";
+import trainIcon from "../assets/train-inverted.png";
+import uvIcon from "../assets/uv-inverted.png";
 
 interface Props {
   activeRouteIds: string[];

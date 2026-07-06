@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
-import { Bookmark, Clock, Map as MapIcon, Star, Trash2 } from "lucide-react";
+import { Bookmark, Map as MapIcon, Star, Trash2 } from "lucide-react";
 import type { Vehicle, VehicleType } from "../App";
 import { GOLDEN_ROUTE_GROUPS, GOLDEN_ROUTE_VEHICLES } from "../data/routes";
-import busIcon from "../assets/bus.png";
-import jeepneyIcon from "../assets/jeepney.png";
-import trainIcon from "../assets/train.png";
-import uvIcon from "../assets/uv.png";
+import busIcon from "../assets/bus-inverted.png";
+import jeepneyIcon from "../assets/jeepney-inverted.png";
+import trainIcon from "../assets/train-inverted.png";
+import uvIcon from "../assets/uv-inverted.png";
 
 interface Props {
   activeRouteIds: string[];
@@ -66,46 +66,61 @@ export function SavedRoutesScreen({ activeRouteIds, onSelectRoute }: Props) {
     const selected = activeRouteIds.includes(route.id);
     const favorite = favoriteIds.has(route.id);
 
-    return (
-      <div key={route.id} className="rounded-2xl overflow-hidden" style={{ background: "#0E1E2A", border: selected ? "1px solid #2FA4D7" : "1px solid #1C3344" }}>
-        <div className="p-3.5">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "#233D4D", color: "#2FA4D7", fontSize: 11, fontWeight: 900 }}>
-              <VehicleTypeIcon type={route.type} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="truncate" style={{ color: "#EAECF0", fontSize: 14, fontWeight: 800 }}>{route.routeName}</p>
-              <div className="flex items-center gap-3 mt-1.5">
-                <div className="flex items-center gap-1">
-                  <Clock size={10} color="#4A6070" />
-                  <span style={{ color: "#4A6070", fontSize: 11 }}>{route.eta} min</span>
-                </div>
-                <span style={{ color: "#2A4050", fontSize: 11 }}>-</span>
-                <span style={{ color: "#4A6070", fontSize: 11 }}>{route.distance}</span>
-              </div>
-            </div>
-            <div className="flex flex-col gap-1.5 items-end shrink-0">
-              <button onClick={() => toggleFav(route.id)}>
-                <Star size={16} color={favorite ? "#2FA4D7" : "#2A4050"} fill={favorite ? "#2FA4D7" : "none"} />
-              </button>
-              <button onClick={() => deleteRoute(route.id)}>
-                <Trash2 size={14} color="#2A4050" />
-              </button>
-            </div>
-          </div>
+    const stops = route.stops.length ? route.stops : [route.routeName];
+    const from = stops[0];
+    const to = stops[stops.length - 1];
 
-          <div className="mt-3 flex items-center justify-end">
-            <button
-              onClick={() => onSelectRoute(route.id)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full"
-              style={{ background: selected ? "#233D4D" : "#2FA4D7", color: selected ? "#FFFFFF" : "#000", fontSize: 11, fontWeight: 800 }}
-            >
-              <MapIcon size={11} />
-              {selected ? "Selected" : "Open"}
-            </button>
+    return (
+      <article
+        key={route.id}
+        className="rounded-2xl p-4 relative"
+        style={{
+          background: "#0E1E2A",
+          border: selected ? "1px solid #2FA4D7" : "1px solid #1C3344",
+        }}
+      >
+        <div className="absolute top-4 right-3 flex flex-col gap-2 items-end">
+          <button
+            aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
+            className="w-6 h-6 flex items-center justify-center"
+            onClick={() => toggleFav(route.id)}
+          >
+            <Star size={16} color={favorite ? "#2FA4D7" : "#2A4050"} fill={favorite ? "#2FA4D7" : "none"} />
+          </button>
+          <button
+            aria-label="Remove saved route"
+            className="w-6 h-6 flex items-center justify-center"
+            onClick={() => deleteRoute(route.id)}
+          >
+            <Trash2 size={14} color="#2A4050" />
+          </button>
+        </div>
+
+        <div className="flex items-start gap-3">
+          <div className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0" style={{ background: "#233D4D", color: "#2FA4D7", fontSize: 12, fontWeight: 900 }}>
+            <VehicleTypeIcon type={route.type} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 style={{ color: "#EAECF0", fontSize: 15, fontWeight: 900, lineHeight: 1.25 }}>{route.routeName}</h2>
+            <p style={{ color: "#4A6070", fontSize: 12, marginTop: 5 }}>
+              {from}{from !== to ? ` to ${to}` : ""}
+            </p>
+          </div>
+          <div className="text-right shrink-0" style={{ paddingRight: 34 }}>
+            <span style={{ color: "#EAECF0", fontSize: 22, fontWeight: 900 }}>{route.eta}</span>
+            <span style={{ color: "#4A6070", fontSize: 11 }}> min</span>
           </div>
         </div>
-      </div>
+
+        <button
+          onClick={() => onSelectRoute(route.id)}
+          className="w-full mt-4 flex items-center justify-center gap-2 py-3 rounded-xl"
+          style={{ background: "#2FA4D7", color: "#000", fontSize: 14, fontWeight: 800 }}
+        >
+          <MapIcon size={15} />
+          {selected ? "Open Selected Route" : "Open on Map"}
+        </button>
+      </article>
     );
   };
 
@@ -119,7 +134,7 @@ export function SavedRoutesScreen({ activeRouteIds, onSelectRoute }: Props) {
         <p style={{ color: "#3A5060", fontSize: 12 }}>{savedRoutes.length} golden route(s) saved</p>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4 flex flex-col gap-3">
+      <div className="flex-1 overflow-y-auto px-4 pb-6 flex flex-col gap-3">
         {savedRoutes.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-3 mt-20">
             <div className="w-16 h-16 rounded-2xl flex items-center justify-center" style={{ background: "#0E1E2A", border: "1px solid #1C3344" }}>
@@ -131,13 +146,13 @@ export function SavedRoutesScreen({ activeRouteIds, onSelectRoute }: Props) {
           <>
             {favRoutes.length > 0 && (
               <>
-                <p style={{ color: "#3A5060", fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.5px" }}>Favorites</p>
+                <p style={{ color: "#3A5060", fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.5px", marginTop: 4, marginBottom: 2 }}>Favorites</p>
                 {favRoutes.map(renderCard)}
               </>
             )}
             {otherRoutes.length > 0 && (
               <>
-                <p style={{ color: "#3A5060", fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.5px", marginTop: 4 }}>Other Routes</p>
+                <p style={{ color: "#3A5060", fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.5px", marginTop: 10, marginBottom: 2 }}>Other Routes</p>
                 {otherRoutes.map(renderCard)}
               </>
             )}
