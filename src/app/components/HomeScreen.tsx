@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Navigation } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import { StreetMetroMap, type SearchedLocation } from "./StreetMetroMap";
@@ -64,7 +64,7 @@ function capacityLabel(vehicle: Vehicle) {
   return `${vehicle.capacity.charAt(0).toUpperCase()}${vehicle.capacity.slice(1)}`;
 }
 
-export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, userLocation, locationStatus, mapStyle, settings, onFlowChange, onActiveRouteIdsChange, onToggleLocationSharing, onVehicleSelect }: Props) {
+function HomeScreenComponent({ user, flow, activeRouteIds, isSharingLocation, userLocation, locationStatus, mapStyle, settings, onFlowChange, onActiveRouteIdsChange, onToggleLocationSharing, onVehicleSelect }: Props) {
   const [routeSelectionStatus, setRouteSelectionStatus] = useState("Select Route");
   const [pickerFilter, setPickerFilter] = useState<Vehicle["type"] | "all">("all");
   const [activeTripId, setActiveTripId] = useState<string | null>(null);
@@ -72,10 +72,17 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
   const [tripStatus, setTripStatus] = useState("No active trip");
   const loadedFrequentRouteRef = useRef(false);
   const userIdRef = useRef<string | null>(user?.id ?? null);
+  const routePickerScrollRef = useRef<HTMLDivElement | null>(null);
+  const routePickerScrollTopRef = useRef(0);
 
   useEffect(() => {
     userIdRef.current = user?.id ?? userIdRef.current;
   }, [user?.id]);
+
+  useLayoutEffect(() => {
+    if (!routePickerScrollRef.current) return;
+    routePickerScrollRef.current.scrollTop = routePickerScrollTopRef.current;
+  });
 
   const activeRouteId = activeRouteIds[0] ?? null;
   const activeVehicle = activeRouteId ? VEHICLES_BY_ID[activeRouteId] : null;
@@ -485,7 +492,13 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
             })}
           </div>
 
-          <div className="max-h-28 overflow-y-auto pr-1 flex flex-col gap-1.5">
+          <div
+            ref={routePickerScrollRef}
+            onScroll={(event) => {
+              routePickerScrollTopRef.current = event.currentTarget.scrollTop;
+            }}
+            className="max-h-28 overflow-y-auto pr-1 flex flex-col gap-1.5"
+          >
             {GOLDEN_ROUTE_GROUPS.filter((group) => pickerFilter === "all" || group.type === pickerFilter).map((group) => (
               <div key={group.label} className="flex flex-wrap gap-2">
                 {group.routes.map((route) => {
@@ -532,3 +545,16 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
     </div>
   );
 }
+
+export const HomeScreen = memo(HomeScreenComponent, (prev, next) => (
+  prev.user?.id === next.user?.id &&
+  prev.flow === next.flow &&
+  prev.activeRouteIds.join("|") === next.activeRouteIds.join("|") &&
+  prev.isSharingLocation === next.isSharingLocation &&
+  prev.userLocation?.lat === next.userLocation?.lat &&
+  prev.userLocation?.lon === next.userLocation?.lon &&
+  prev.locationStatus === next.locationStatus &&
+  prev.mapStyle === next.mapStyle &&
+  prev.settings.offlineMode === next.settings.offlineMode &&
+  prev.settings.lowData === next.settings.lowData
+));

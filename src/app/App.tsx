@@ -393,7 +393,12 @@ export default function App() {
                 }}
               />
             )}
-            {activeTab === "notifications" && <NotificationsScreen activeRouteIds={homeActiveRouteIds} settings={appSettings} />}
+            {activeTab === "notifications" && (
+              <NotificationsScreen
+                activeRouteIds={homeActiveRouteIds}
+                settings={appSettings}
+              />
+            )}
             {activeTab === "saved" && (
               <SavedRoutesScreen
                 activeRouteIds={homeActiveRouteIds}

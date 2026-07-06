@@ -1,24 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, Bell, CheckCircle, Clock, Info, Trash2 } from "lucide-react";
-import { supabase } from "../lib/supabase";
 import { GOLDEN_ROUTE_VEHICLES } from "../data/routes";
-import type { AppSettings } from "../App";
+import type { AppSettings, VehicleType } from "../App";
 
 interface Props {
   activeRouteIds: string[];
   settings: AppSettings;
-}
-
-interface VehicleTelemetry {
-  id: string;
-  route_id: string;
-  label: string | null;
-  last_seen_at: string | null;
-  metadata?: {
-    available_seats?: number;
-    max_seats?: number;
-    vehicle_type?: string;
-  } | null;
 }
 
 interface AppNotification {
@@ -27,6 +14,18 @@ interface AppNotification {
   title: string;
   body: string;
   time: string;
+}
+
+interface NotificationVehicleTelemetry {
+  id: string;
+  route_id: string;
+  label: string;
+  last_seen_at: string;
+  metadata: {
+    available_seats: number;
+    max_seats: number;
+    vehicle_type: VehicleType;
+  };
 }
 
 const ROUTE_BY_ID = new Map(GOLDEN_ROUTE_VEHICLES.map((vehicle) => [vehicle.id, vehicle]));
@@ -55,7 +54,37 @@ function routeTypeLabel(routeId: string) {
   return "Jeep";
 }
 
-function buildNotifications(activeRouteIds: string[], telemetry: VehicleTelemetry[], settings: AppSettings): AppNotification[] {
+function maxSeatsFor(type: VehicleType) {
+  if (type === "train") return 1000;
+  if (type === "bus") return 55;
+  if (type === "uvexpress") return 14;
+  return 18;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function initializeNotificationFleet(): NotificationVehicleTelemetry[] {
+  return GOLDEN_ROUTE_VEHICLES.flatMap((route) => {
+    const maxSeats = maxSeatsFor(route.type);
+    const count = route.type === "uvexpress" ? 10 : 20;
+
+    return Array.from({ length: count }, (_, index) => ({
+      id: `notification-${route.id}-${index}`,
+      route_id: route.id,
+      label: `${route.routeName} ${index + 1}`,
+      last_seen_at: new Date().toISOString(),
+      metadata: {
+        available_seats: clamp(Math.floor(maxSeats * (0.35 + Math.random() * 0.45)), 0, maxSeats),
+        max_seats: maxSeats,
+        vehicle_type: route.type,
+      },
+    }));
+  });
+}
+
+function buildNotifications(activeRouteIds: string[], telemetry: NotificationVehicleTelemetry[], settings: AppSettings): AppNotification[] {
   if (!activeRouteIds.length) {
     return [{
       id: "select-route",
@@ -113,45 +142,37 @@ function buildNotifications(activeRouteIds: string[], telemetry: VehicleTelemetr
 }
 
 export function NotificationsScreen({ activeRouteIds, settings }: Props) {
-  const [telemetry, setTelemetry] = useState<VehicleTelemetry[]>([]);
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+  const [simulatedVehicles, setSimulatedVehicles] = useState<NotificationVehicleTelemetry[]>(initializeNotificationFleet);
 
   useEffect(() => {
-    if (!supabase || !activeRouteIds.length) {
-      setTelemetry([]);
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadTelemetry() {
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("id,route_id,label,last_seen_at,metadata")
-        .in("route_id", activeRouteIds)
-        .order("last_seen_at", { ascending: false })
-        .limit(40);
-
-      if (cancelled) return;
-      if (error) {
-        console.warn("Notification telemetry fetch failed:", error.message);
-        return;
-      }
-
-      setTelemetry((data || []) as VehicleTelemetry[]);
-    }
-
-    void loadTelemetry();
     const intervalId = window.setInterval(() => {
-      void loadTelemetry();
-    }, 5000);
+      const timestamp = new Date().toISOString();
 
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [activeRouteIds.join("|")]);
+      setSimulatedVehicles((vehicles) => vehicles.map((vehicle) => {
+        const seatDelta = Math.floor(Math.random() * 7) - 3;
+        return {
+          ...vehicle,
+          last_seen_at: timestamp,
+          metadata: {
+            ...vehicle.metadata,
+            available_seats: clamp(vehicle.metadata.available_seats + seatDelta, 0, vehicle.metadata.max_seats),
+          },
+        };
+      }));
+    }, 2000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  const telemetry = useMemo(
+    () => simulatedVehicles
+      .filter((vehicle) => activeRouteIds.includes(vehicle.route_id))
+      .sort((a, b) => new Date(b.last_seen_at).getTime() - new Date(a.last_seen_at).getTime())
+      .slice(0, 40),
+    [activeRouteIds, simulatedVehicles]
+  );
 
   const notifications = useMemo(
     () => buildNotifications(activeRouteIds, telemetry, settings).filter((notification) => !dismissedIds.has(notification.id)),

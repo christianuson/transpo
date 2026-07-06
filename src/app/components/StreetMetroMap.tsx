@@ -1,11 +1,10 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
-import { Circle, CircleMarker, MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
+import { Fragment, useEffect, useMemo } from "react";
+import { Circle, CircleMarker, MapContainer, Marker, Polyline, Popup, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import L, { type LatLngExpression, type LatLngBoundsExpression } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet.markercluster/dist/MarkerCluster.css";
 import "leaflet.markercluster/dist/MarkerCluster.Default.css";
-import { VehicleType } from "../App";
-import { supabase } from "../lib/supabase";
+import type { VehicleType } from "../App";
 import { ROUTES_BY_ID, STOPS, type TransitRoute } from "../data/routes";
 import busIcon from "../assets/bus.png";
 import jeepneyIcon from "../assets/jeepney.png";
@@ -19,6 +18,7 @@ const METRO_MANILA_BOUNDS: LatLngBoundsExpression = [
 ];
 
 const DEFAULT_CENTER: LatLngExpression = [14.6091, 121.0223];
+let preservedMapView: { center: [number, number]; zoom: number } | null = null;
 
 const HEAT_SPOTS: Array<{ center: LatLngExpression; radius: number; color: string }> = [
   { center: [14.619, 121.052], radius: 900, color: "#737373" },
@@ -27,29 +27,6 @@ const HEAT_SPOTS: Array<{ center: LatLngExpression; radius: number; color: strin
   { center: [14.604, 120.982], radius: 700, color: "#A3A3A3" },
   { center: [14.655, 121.032], radius: 650, color: "#D4D4D4" },
 ];
-
-interface VehicleTelemetry {
-  id: string;
-  route_id: string;
-  label: string | null;
-  latitude: number;
-  longitude: number;
-  last_seen_at: string | null;
-  metadata?: {
-    available_seats?: number;
-    max_seats?: number;
-    vehicle_type?: VehicleType;
-  } | null;
-}
-
-interface StopHotspot {
-  id: string;
-  route_id?: string | null;
-  label: string | null;
-  crowd_level: "low" | "moderate" | "high" | "critical";
-  waiting_commuters: number;
-  last_updated: string | null;
-}
 
 export interface SearchedLocation {
   lat: number;
@@ -69,14 +46,42 @@ interface Props {
   onVehicleClick: (vehicleId: string) => void;
 }
 
-function markerIcon(type: VehicleType) {
-  const image: Record<VehicleType, string> = {
-    bus: busIcon,
-    train: trainIcon,
-    jeepney: jeepneyIcon,
-    uvexpress: uvIcon,
-  };
+type CrowdLevel = "low" | "moderate" | "high" | "critical";
 
+type LocalVehicle = {
+  id: string;
+  routeId: string;
+  routeName: string;
+  type: VehicleType;
+  path: [number, number][];
+  currentIndex: number;
+  direction: 1 | -1;
+  availableSeats: number;
+  maxSeats: number;
+};
+
+type LocalHotspot = {
+  id: string;
+  label: string;
+  waitingCommuters: number;
+  crowdLevel: CrowdLevel;
+};
+
+const VEHICLE_ICON_IMAGE: Record<VehicleType, string> = {
+  bus: busIcon,
+  train: trainIcon,
+  jeepney: jeepneyIcon,
+  uvexpress: uvIcon,
+};
+
+const VEHICLE_MARKER_ICONS: Record<VehicleType, L.DivIcon> = {
+  bus: createVehicleMarkerIcon("bus"),
+  jeepney: createVehicleMarkerIcon("jeepney"),
+  train: createVehicleMarkerIcon("train"),
+  uvexpress: createVehicleMarkerIcon("uvexpress"),
+};
+
+function createVehicleMarkerIcon(type: VehicleType) {
   return L.divIcon({
     className: "",
     html: `<span style="
@@ -90,7 +95,7 @@ function markerIcon(type: VehicleType) {
       border:2px solid #FFFFFF;
       box-shadow:0 5px 16px rgba(0,0,0,0.22), 0 0 0 4px rgba(255,255,255,0.55);
       overflow:hidden;
-    "><img src="${image[type]}" style="width:28px;height:28px;object-fit:contain;display:block;" /></span>`,
+    "><img src="${VEHICLE_ICON_IMAGE[type]}" style="width:28px;height:28px;object-fit:contain;display:block;" /></span>`,
     iconSize: [34, 34],
     iconAnchor: [17, 17],
   });
@@ -114,13 +119,25 @@ const searchedIcon = L.divIcon({
   iconAnchor: [17, 17],
 });
 
-function ChangeView({ location }: { location: SearchedLocation | null }) {
-  const map = useMap();
-
-  useEffect(() => {
-    if (!location) return;
-    map.flyTo([location.lat, location.lon], 14, { duration: 1.5 });
-  }, [location, map]);
+function PreserveMapView() {
+  useMapEvents({
+    moveend: (event) => {
+      const map = event.target;
+      const center = map.getCenter();
+      preservedMapView = {
+        center: [center.lat, center.lng],
+        zoom: map.getZoom(),
+      };
+    },
+    zoomend: (event) => {
+      const map = event.target;
+      const center = map.getCenter();
+      preservedMapView = {
+        center: [center.lat, center.lng],
+        zoom: map.getZoom(),
+      };
+    },
+  });
 
   return null;
 }
@@ -134,11 +151,172 @@ function routeColor(routeId: string | null, type?: VehicleType) {
   return "#525252";
 }
 
-function hotspotStyle(level?: StopHotspot["crowd_level"]) {
+function hotspotStyle(level?: CrowdLevel) {
   if (level === "critical") return { radius: 24, color: "#7f1d1d" };
   if (level === "high") return { radius: 16, color: "#ef4444" };
   if (level === "moderate") return { radius: 10, color: "#f59e0b" };
   return { radius: 6, color: "#16a34a" };
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function maxSeatsFor(type: VehicleType) {
+  if (type === "train") return 1000;
+  if (type === "bus") return 55;
+  if (type === "uvexpress") return 14;
+  return 18;
+}
+
+function ghostVehicleCountFor(type: VehicleType) {
+  if (type === "uvexpress") return 5;
+  return 10;
+}
+
+function crowdLevelFor(waitingCommuters: number): CrowdLevel {
+  if (waitingCommuters > 300) return "critical";
+  if (waitingCommuters > 150) return "high";
+  if (waitingCommuters > 50) return "moderate";
+  return "low";
+}
+
+function popupForVehicle(vehicle: LocalVehicle) {
+  return `
+    <div style="min-width:160px">
+      <strong>${vehicle.routeName}</strong><br />
+      Seats: ${vehicle.availableSeats}/${vehicle.maxSeats}<br />
+      Updated: ${new Date().toLocaleTimeString()}
+    </div>
+  `;
+}
+
+function VehicleMarkersLayer({
+  routes,
+  onVehicleClick,
+}: {
+  routes: TransitRoute[];
+  onVehicleClick: (vehicleId: string) => void;
+}) {
+  const map = useMap();
+  const routeKey = routes.map((route) => route.id).join("|");
+
+  useEffect(() => {
+    const layer = L.layerGroup().addTo(map);
+    const vehicles: LocalVehicle[] = routes.flatMap((route, routeIndex) => {
+      const vehiclesPerDirection = ghostVehicleCountFor(route.vehicleType);
+      const maxSeats = maxSeatsFor(route.vehicleType);
+      const totalVehicles = vehiclesPerDirection * 2;
+
+      return Array.from({ length: totalVehicles }, (_, vehicleIndex) => {
+        const reverse = vehicleIndex >= vehiclesPerDirection;
+        const direction = reverse ? -1 : 1;
+        const sequenceIndex = reverse ? vehicleIndex - vehiclesPerDirection : vehicleIndex;
+        const baseIndex = Math.floor((route.coordinates.length / vehiclesPerDirection) * sequenceIndex) % route.coordinates.length;
+        const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(route.coordinates.length / Math.max(vehiclesPerDirection, 1))));
+        const currentIndex = reverse
+          ? (route.coordinates.length - 1 - baseIndex + jitter) % route.coordinates.length
+          : (baseIndex + jitter) % route.coordinates.length;
+
+        return {
+          id: `local-${route.id}-${routeIndex}-${vehicleIndex}`,
+          routeId: route.id,
+          routeName: `${route.name} ${reverse ? "Inbound" : "Outbound"} ${sequenceIndex + 1}`,
+          type: route.vehicleType,
+          path: route.coordinates,
+          currentIndex,
+          direction,
+          availableSeats: clamp(Math.floor(maxSeats * (0.35 + Math.random() * 0.45)), 0, maxSeats),
+          maxSeats,
+        };
+      });
+    });
+
+    const markers = new Map<string, L.Marker>();
+    vehicles.forEach((vehicle) => {
+      const [lng, lat] = vehicle.path[vehicle.currentIndex];
+      const marker = L.marker([lat, lng], { icon: VEHICLE_MARKER_ICONS[vehicle.type] })
+        .bindPopup(popupForVehicle(vehicle))
+        .on("click", () => onVehicleClick(vehicle.routeId))
+        .addTo(layer);
+      markers.set(vehicle.id, marker);
+    });
+
+    const intervalId = window.setInterval(() => {
+      vehicles.forEach((vehicle) => {
+        const step = 1 + Math.floor(Math.random() * 3);
+        vehicle.currentIndex = (vehicle.currentIndex + vehicle.direction * step + vehicle.path.length) % vehicle.path.length;
+        vehicle.availableSeats = clamp(vehicle.availableSeats + Math.floor(Math.random() * 7) - 3, 0, vehicle.maxSeats);
+        const [lng, lat] = vehicle.path[vehicle.currentIndex];
+        const marker = markers.get(vehicle.id);
+        marker?.setLatLng([lat, lng]);
+        marker?.setPopupContent(popupForVehicle(vehicle));
+      });
+    }, 2000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      layer.removeFrom(map);
+    };
+  }, [map, routeKey, onVehicleClick]);
+
+  return null;
+}
+
+function HotspotLayer({ routes }: { routes: TransitRoute[] }) {
+  const map = useMap();
+  const routeKey = routes.map((route) => route.id).join("|");
+
+  useEffect(() => {
+    const layer = L.layerGroup().addTo(map);
+    const activeRouteIds = new Set(routes.map((route) => route.id));
+    const hotspots = STOPS.filter((stop) => stop.routeId && activeRouteIds.has(stop.routeId)).map((stop) => {
+      const waitingCommuters = Math.floor(Math.random() * 140);
+      return {
+        id: stop.id,
+        label: stop.name,
+        waitingCommuters,
+        crowdLevel: crowdLevelFor(waitingCommuters),
+      } satisfies LocalHotspot;
+    });
+
+    const markers = new Map<string, L.CircleMarker>();
+    hotspots.forEach((hotspot) => {
+      const station = STOPS.find((stop) => stop.id === hotspot.id);
+      if (!station) return;
+      const style = hotspotStyle(hotspot.crowdLevel);
+      const marker = L.circleMarker([station.coordinates[1], station.coordinates[0]], {
+        radius: style.radius,
+        color: "#FFFFFF",
+        fillColor: style.color,
+        fillOpacity: 0.72,
+        opacity: 1,
+        weight: 3,
+      })
+        .bindPopup(`<strong>${hotspot.label}</strong><br />Crowd: ${hotspot.crowdLevel}<br />Waiting: ${hotspot.waitingCommuters}`)
+        .addTo(layer);
+      markers.set(hotspot.id, marker);
+    });
+
+    const intervalId = window.setInterval(() => {
+      hotspots.forEach((hotspot) => {
+        hotspot.waitingCommuters = clamp(hotspot.waitingCommuters + Math.floor(Math.random() * 31) - 12, 0, 500);
+        hotspot.crowdLevel = crowdLevelFor(hotspot.waitingCommuters);
+        const marker = markers.get(hotspot.id);
+        const style = hotspotStyle(hotspot.crowdLevel);
+        marker?.setRadius(style.radius);
+        marker?.setStyle({ fillColor: style.color });
+        marker?.setPopupContent(`<strong>${hotspot.label}</strong><br />Crowd: ${hotspot.crowdLevel}<br />Waiting: ${hotspot.waitingCommuters}`);
+      });
+    }, 3000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      layer.removeFrom(map);
+    };
+  }, [map, routeKey]);
+
+  return null;
 }
 
 export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, activeRouteIds, searchedLocation, mapStyle, offlineMode, lowDataMode, onVehicleClick }: Props) {
@@ -148,8 +326,6 @@ export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, acti
   const activeRoutes = useMemo(() => selectedRouteIds
     .map((routeId) => ROUTES_BY_ID.get(routeId))
     .filter((route): route is TransitRoute => Boolean(route) && activeFilters.includes(route.vehicleType)), [activeFilterKey, selectedRouteKey]);
-  const [vehicleTelemetry, setVehicleTelemetry] = useState<VehicleTelemetry[]>([]);
-  const [hotspots, setHotspots] = useState<Record<string, StopHotspot>>({});
   const tileUrl = lowDataMode
     ? "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
     : mapStyle === "dark"
@@ -157,99 +333,10 @@ export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, acti
     : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
   const tileClassName = lowDataMode ? "grayscale contrast-75 brightness-105" : mapStyle === "dark" ? "brightness-110 contrast-90" : "grayscale contrast-75 brightness-110";
 
-  useEffect(() => {
-    if (!supabase || !selectedRouteIds.length || offlineMode) {
-      setVehicleTelemetry([]);
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadVehicleTelemetry() {
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("id,route_id,label,latitude,longitude,last_seen_at,metadata")
-        .in("route_id", selectedRouteIds);
-
-      if (cancelled) return;
-      if (error) {
-        console.warn("Vehicle telemetry fetch failed:", error.message);
-        return;
-      }
-
-      setVehicleTelemetry((data || []).filter((vehicle) => (
-        Number.isFinite(vehicle.latitude) && Number.isFinite(vehicle.longitude)
-      )) as VehicleTelemetry[]);
-    }
-
-    void loadVehicleTelemetry();
-    const intervalId = window.setInterval(() => {
-      void loadVehicleTelemetry();
-    }, 3000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [selectedRouteKey, offlineMode]);
-
-  useEffect(() => {
-    if (!supabase || offlineMode || lowDataMode) {
-      setHotspots({});
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadHotspots() {
-      const { data, error } = await supabase
-        .from("live_stops")
-        .select("id,route_id,label,crowd_level,waiting_commuters,last_updated");
-
-      if (cancelled) return;
-      if (error) {
-        console.warn("Live stop hotspot fetch failed:", error.message);
-        return;
-      }
-
-      const nextHotspots = (data || []).reduce<Record<string, StopHotspot>>((acc, hotspot) => {
-        acc[String(hotspot.id)] = hotspot as StopHotspot;
-        return acc;
-      }, {});
-      setHotspots(nextHotspots);
-    }
-
-    void loadHotspots();
-
-    const channel = supabase
-      .channel("live-stops-map")
-      .on("postgres_changes", { event: "*", schema: "public", table: "live_stops" }, (payload) => {
-        if (payload.eventType === "DELETE") {
-          const oldId = String((payload.old as { id?: string }).id || "");
-          setHotspots((current) => {
-            const next = { ...current };
-            delete next[oldId];
-            return next;
-          });
-          return;
-        }
-
-        const next = payload.new as StopHotspot;
-        if (!next?.id) return;
-        setHotspots((current) => ({ ...current, [String(next.id)]: next }));
-      })
-      .subscribe();
-
-    return () => {
-      cancelled = true;
-      void supabase.removeChannel(channel);
-    };
-  }, [offlineMode, lowDataMode]);
-
   return (
     <MapContainer
-      center={DEFAULT_CENTER}
-      zoom={12}
+      center={preservedMapView?.center || DEFAULT_CENTER}
+      zoom={preservedMapView?.zoom || 12}
       minZoom={10}
       maxBounds={METRO_MANILA_BOUNDS}
       maxBoundsViscosity={1}
@@ -295,91 +382,37 @@ export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, acti
         );
       })}
 
-      {!offlineMode && activeRoutes.flatMap((route) => {
-        const routeVehicles = vehicleTelemetry.filter((vehicle) => vehicle.route_id === route.id);
-
-        if (!routeVehicles.length) {
-          const fallbackPosition = route.coordinates[Math.floor(route.coordinates.length / 2)];
-          if (!fallbackPosition) return [];
-
-          return (
-            <Marker
-              key={`${route.id}-vehicle-fallback`}
-              position={[fallbackPosition[1], fallbackPosition[0]]}
-              icon={markerIcon(route.vehicleType)}
-              eventHandlers={{ click: () => onVehicleClick(route.id) }}
-            >
-              <Popup>{route.name}</Popup>
-            </Marker>
-          );
-        }
-
-        return routeVehicles.map((vehicle) => (
-          <Marker
-            key={vehicle.id}
-            position={[vehicle.latitude, vehicle.longitude]}
-            icon={markerIcon(route.vehicleType)}
-            eventHandlers={{ click: () => onVehicleClick(route.id) }}
-          >
-            <Popup>
-              <div style={{ minWidth: 160 }}>
-                <strong>{vehicle.label || route.name}</strong>
-                {vehicle.metadata?.available_seats !== undefined && (
-                  <>
-                    <br />
-                    Seats: {vehicle.metadata.available_seats}/{vehicle.metadata.max_seats ?? "?"}
-                  </>
-                )}
-                {vehicle.last_seen_at && (
-                  <>
-                    <br />
-                    Updated: {new Date(vehicle.last_seen_at).toLocaleTimeString()}
-                  </>
-                )}
-              </div>
-            </Popup>
-          </Marker>
-        ));
-      })}
+      {!offlineMode && (
+        <VehicleMarkersLayer
+          routes={activeRoutes}
+          onVehicleClick={onVehicleClick}
+        />
+      )}
 
       {activeRoutes.flatMap((route) => {
         if (!route) return [];
 
         return STOPS.filter((stop) => stop.routeId === route.id).map((station) => {
-          const hotspot = hotspots[station.id];
-          const liveStyle = hotspotStyle(hotspot?.crowd_level);
           const fallbackColor = routeColor(route.id, route.vehicleType);
 
           return (
             <CircleMarker
               key={station.id}
               center={[station.coordinates[1], station.coordinates[0]]}
-              radius={hotspot ? liveStyle.radius : 5}
-              className={hotspot?.crowd_level === "high" || hotspot?.crowd_level === "critical" ? "transpo-hotspot-pulse" : ""}
+              radius={5}
               pathOptions={{
                 color: "#FFFFFF",
-                fillColor: hotspot ? liveStyle.color : fallbackColor,
-                fillOpacity: hotspot ? 0.72 : 0.95,
+                fillColor: fallbackColor,
+                fillOpacity: 0.95,
                 opacity: 1,
-                weight: hotspot ? 3 : 2,
+                weight: 2,
               }}
             >
               <Popup>
                 <div style={{ minWidth: 160 }}>
-                  <strong>{hotspot?.label || station.name}</strong>
-                  {hotspot ? (
-                    <>
-                      <br />
-                      Crowd: {hotspot.crowd_level}
-                      <br />
-                      Waiting: {hotspot.waiting_commuters}
-                    </>
-                  ) : (
-                    <>
-                      <br />
-                      Live crowd pending
-                    </>
-                  )}
+                  <strong>{station.name}</strong>
+                  <br />
+                  Station marker
                 </div>
               </Popup>
             </CircleMarker>
@@ -387,13 +420,15 @@ export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, acti
         });
       })}
 
+      {!offlineMode && !lowDataMode && <HotspotLayer routes={activeRoutes} />}
+
       {searchedLocation && (
         <Marker position={[searchedLocation.lat, searchedLocation.lon]} icon={searchedIcon}>
           <Popup>{searchedLocation.name}</Popup>
         </Marker>
       )}
 
-      <ChangeView location={searchedLocation} />
+      <PreserveMapView />
     </MapContainer>
   );
 }
