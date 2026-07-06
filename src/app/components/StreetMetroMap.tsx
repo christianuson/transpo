@@ -56,6 +56,9 @@ type LocalVehicle = {
   path: [number, number][];
   currentIndex: number;
   direction: 1 | -1;
+  stopIndexes: number[];
+  pauseUntil: number;
+  lastPausedStopIndex: number | null;
   availableSeats: number;
   maxSeats: number;
 };
@@ -174,6 +177,65 @@ function ghostVehicleCountFor(type: VehicleType) {
   return 10;
 }
 
+function nearestPathIndex(path: [number, number][], coordinate: [number, number]) {
+  let nearestIndex = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  path.forEach(([lng, lat], index) => {
+    const lngDelta = lng - coordinate[0];
+    const latDelta = lat - coordinate[1];
+    const distance = lngDelta * lngDelta + latDelta * latDelta;
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  });
+
+  return nearestIndex;
+}
+
+function stopIndexesForRoute(route: TransitRoute) {
+  if (!route.coordinates.length) return [];
+  const indexes = STOPS
+    .filter((stop) => stop.routeId === route.id)
+    .map((stop) => nearestPathIndex(route.coordinates, stop.coordinates));
+
+  return Array.from(new Set(indexes)).sort((a, b) => a - b);
+}
+
+function crossedStopIndex(vehicle: LocalVehicle, nextIndex: number) {
+  if (!vehicle.stopIndexes.length || vehicle.currentIndex === nextIndex) return null;
+
+  const pathLength = vehicle.path.length;
+  const crossed = (stopIndex: number) => {
+    if (stopIndex === vehicle.currentIndex || stopIndex === vehicle.lastPausedStopIndex) return false;
+
+    if (vehicle.direction === 1) {
+      return vehicle.currentIndex < nextIndex
+        ? stopIndex > vehicle.currentIndex && stopIndex <= nextIndex
+        : stopIndex > vehicle.currentIndex || stopIndex <= nextIndex;
+    }
+
+    return vehicle.currentIndex > nextIndex
+      ? stopIndex < vehicle.currentIndex && stopIndex >= nextIndex
+      : stopIndex < vehicle.currentIndex || stopIndex >= nextIndex;
+  };
+
+  const candidates = vehicle.stopIndexes.filter(crossed);
+  if (!candidates.length) return null;
+
+  return candidates.reduce((nearest, stopIndex) => {
+    const nearestDistance = (vehicle.direction === 1)
+      ? (nearest - vehicle.currentIndex + pathLength) % pathLength
+      : (vehicle.currentIndex - nearest + pathLength) % pathLength;
+    const stopDistance = (vehicle.direction === 1)
+      ? (stopIndex - vehicle.currentIndex + pathLength) % pathLength
+      : (vehicle.currentIndex - stopIndex + pathLength) % pathLength;
+
+    return stopDistance < nearestDistance ? stopIndex : nearest;
+  });
+}
+
 function crowdLevelFor(waitingCommuters: number): CrowdLevel {
   if (waitingCommuters > 300) return "critical";
   if (waitingCommuters > 150) return "high";
@@ -207,6 +269,7 @@ function VehicleMarkersLayer({
       const vehiclesPerDirection = ghostVehicleCountFor(route.vehicleType);
       const maxSeats = maxSeatsFor(route.vehicleType);
       const totalVehicles = vehiclesPerDirection * 2;
+      const stopIndexes = stopIndexesForRoute(route);
 
       return Array.from({ length: totalVehicles }, (_, vehicleIndex) => {
         const reverse = vehicleIndex >= vehiclesPerDirection;
@@ -226,6 +289,9 @@ function VehicleMarkersLayer({
           path: route.coordinates,
           currentIndex,
           direction,
+          stopIndexes,
+          pauseUntil: 0,
+          lastPausedStopIndex: null,
           availableSeats: clamp(Math.floor(maxSeats * (0.35 + Math.random() * 0.45)), 0, maxSeats),
           maxSeats,
         };
@@ -243,9 +309,27 @@ function VehicleMarkersLayer({
     });
 
     const intervalId = window.setInterval(() => {
+      const now = Date.now();
+
       vehicles.forEach((vehicle) => {
+        if (vehicle.pauseUntil > now) {
+          vehicle.availableSeats = clamp(vehicle.availableSeats + Math.floor(Math.random() * 5) - 2, 0, vehicle.maxSeats);
+          markers.get(vehicle.id)?.setPopupContent(popupForVehicle(vehicle));
+          return;
+        }
+
+        if (vehicle.lastPausedStopIndex === vehicle.currentIndex) {
+          vehicle.lastPausedStopIndex = null;
+        }
+
         const step = 1 + Math.floor(Math.random() * 3);
-        vehicle.currentIndex = (vehicle.currentIndex + vehicle.direction * step + vehicle.path.length) % vehicle.path.length;
+        const nextIndex = (vehicle.currentIndex + vehicle.direction * step + vehicle.path.length) % vehicle.path.length;
+        const stopIndex = crossedStopIndex(vehicle, nextIndex);
+        vehicle.currentIndex = stopIndex ?? nextIndex;
+        if (stopIndex !== null) {
+          vehicle.pauseUntil = now + 5000;
+          vehicle.lastPausedStopIndex = stopIndex;
+        }
         vehicle.availableSeats = clamp(vehicle.availableSeats + Math.floor(Math.random() * 7) - 3, 0, vehicle.maxSeats);
         const [lng, lat] = vehicle.path[vehicle.currentIndex];
         const marker = markers.get(vehicle.id);
