@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, Bell, CheckCircle, Clock, Info, Trash2 } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { GOLDEN_ROUTE_VEHICLES } from "../data/routes";
+import type { AppSettings } from "../App";
 
 interface Props {
   activeRouteIds: string[];
+  settings: AppSettings;
 }
 
 interface VehicleTelemetry {
@@ -53,7 +55,7 @@ function routeTypeLabel(routeId: string) {
   return "Jeep";
 }
 
-function buildNotifications(activeRouteIds: string[], telemetry: VehicleTelemetry[]): AppNotification[] {
+function buildNotifications(activeRouteIds: string[], telemetry: VehicleTelemetry[], settings: AppSettings): AppNotification[] {
   if (!activeRouteIds.length) {
     return [{
       id: "select-route",
@@ -64,7 +66,7 @@ function buildNotifications(activeRouteIds: string[], telemetry: VehicleTelemetr
     }];
   }
 
-  const notifications: AppNotification[] = activeRouteIds.map((routeId) => {
+  const notifications: AppNotification[] = settings.savedRoute ? activeRouteIds.map((routeId) => {
     const route = ROUTE_BY_ID.get(routeId);
     const count = telemetry.filter((vehicle) => vehicle.route_id === routeId).length;
     return {
@@ -74,7 +76,7 @@ function buildNotifications(activeRouteIds: string[], telemetry: VehicleTelemetr
       body: count ? `${count} live ${routeTypeLabel(routeId).toLowerCase()} vehicle(s) are broadcasting on this route.` : "Waiting for simulated vehicles to broadcast on this route.",
       time: "Live",
     };
-  });
+  }) : [];
 
   telemetry.slice(0, 12).forEach((vehicle) => {
     const route = ROUTE_BY_ID.get(vehicle.route_id);
@@ -82,19 +84,35 @@ function buildNotifications(activeRouteIds: string[], telemetry: VehicleTelemetr
     const maxSeats = vehicle.metadata?.max_seats;
     const lowSeats = availableSeats !== undefined && maxSeats !== undefined && maxSeats > 0 && availableSeats / maxSeats <= 0.2;
 
-    notifications.push({
-      id: `vehicle-${vehicle.id}`,
-      type: lowSeats ? "seat" : "arriving",
-      title: lowSeats ? "Limited seats available" : "Vehicle telemetry updated",
-      body: `${vehicle.label || route?.routeName || "Vehicle"}${availableSeats !== undefined ? ` has ${availableSeats}/${maxSeats ?? "?"} seats available.` : " is active on the selected route."}`,
-      time: relativeTime(vehicle.last_seen_at),
-    });
+    if (lowSeats && settings.seatUpdate) {
+      notifications.push({
+        id: `seat-${vehicle.id}`,
+        type: "seat",
+        title: "Limited seats available",
+        body: `${vehicle.label || route?.routeName || "Vehicle"} has ${availableSeats}/${maxSeats ?? "?"} seats available.`,
+        time: relativeTime(vehicle.last_seen_at),
+      });
+    } else if (!lowSeats && settings.arriving) {
+      notifications.push({
+        id: `vehicle-${vehicle.id}`,
+        type: "arriving",
+        title: "Vehicle telemetry updated",
+        body: `${vehicle.label || route?.routeName || "Vehicle"}${availableSeats !== undefined ? ` has ${availableSeats}/${maxSeats ?? "?"} seats available.` : " is active on the selected route."}`,
+        time: relativeTime(vehicle.last_seen_at),
+      });
+    }
   });
 
-  return notifications;
+  return notifications.length ? notifications : [{
+    id: "alerts-disabled",
+    type: "system",
+    title: "Alerts are muted",
+    body: "Turn on vehicle, seat, or route alerts in Settings to receive updates here.",
+    time: "Now",
+  }];
 }
 
-export function NotificationsScreen({ activeRouteIds }: Props) {
+export function NotificationsScreen({ activeRouteIds, settings }: Props) {
   const [telemetry, setTelemetry] = useState<VehicleTelemetry[]>([]);
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
@@ -136,8 +154,8 @@ export function NotificationsScreen({ activeRouteIds }: Props) {
   }, [activeRouteIds.join("|")]);
 
   const notifications = useMemo(
-    () => buildNotifications(activeRouteIds, telemetry).filter((notification) => !dismissedIds.has(notification.id)),
-    [activeRouteIds, telemetry, dismissedIds]
+    () => buildNotifications(activeRouteIds, telemetry, settings).filter((notification) => !dismissedIds.has(notification.id)),
+    [activeRouteIds, telemetry, dismissedIds, settings]
   );
 
   const unread = notifications.filter((notification) => !readIds.has(notification.id)).length;

@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Navigation } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import { StreetMetroMap, type SearchedLocation } from "./StreetMetroMap";
-import { Vehicle } from "../App";
+import type { AppSettings, Vehicle } from "../App";
 import { ensureGuestUser, supabase } from "../lib/supabase";
+import { saveLocalCompletedTrip, type TripHistoryRecord } from "../lib/tripHistory";
 import { GOLDEN_ROUTE_GROUPS, GOLDEN_ROUTE_VEHICLES } from "../data/routes";
 import gpsIcon from "../assets/gps.jpg";
 import gpsIconInverted from "../assets/gps_inverted.png";
@@ -21,6 +22,8 @@ interface Props {
   isSharingLocation: boolean;
   userLocation: SearchedLocation | null;
   locationStatus: string;
+  mapStyle: "dark" | "light";
+  settings: AppSettings;
   onFlowChange: (flow: HomeFlow) => void;
   onActiveRouteIdsChange: (routeIds: string[]) => void;
   onToggleLocationSharing: () => void;
@@ -61,10 +64,11 @@ function capacityLabel(vehicle: Vehicle) {
   return `${vehicle.capacity.charAt(0).toUpperCase()}${vehicle.capacity.slice(1)}`;
 }
 
-export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, userLocation, locationStatus, onFlowChange, onActiveRouteIdsChange, onToggleLocationSharing, onVehicleSelect }: Props) {
+export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, userLocation, locationStatus, mapStyle, settings, onFlowChange, onActiveRouteIdsChange, onToggleLocationSharing, onVehicleSelect }: Props) {
   const [routeSelectionStatus, setRouteSelectionStatus] = useState("Select Route");
   const [pickerFilter, setPickerFilter] = useState<Vehicle["type"] | "all">("all");
   const [activeTripId, setActiveTripId] = useState<string | null>(null);
+  const [activeTrip, setActiveTrip] = useState<TripHistoryRecord | null>(null);
   const [tripStatus, setTripStatus] = useState("No active trip");
   const loadedFrequentRouteRef = useRef(false);
   const userIdRef = useRef<string | null>(user?.id ?? null);
@@ -75,6 +79,43 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
 
   const activeRouteId = activeRouteIds[0] ?? null;
   const activeVehicle = activeRouteId ? VEHICLES_BY_ID[activeRouteId] : null;
+  const mapUi = mapStyle === "dark"
+    ? {
+      sheetBg: "rgba(14,30,42,0.96)",
+      sheetBorder: "#1C3344",
+      sheetShadow: "0 10px 28px rgba(0,0,0,0.35)",
+      iconBg: "#233D4D",
+      title: "#EAECF0",
+      text: "#8899A8",
+      muted: "#4A6070",
+      nav: "#EAECF0",
+      inactiveChipBg: "#172B3A",
+      inactiveChipBorder: "#294253",
+      inactiveChipText: "#D7E0E7",
+      activeFilterBg: "#FFFFFF",
+      activeFilterBorder: "#FFFFFF",
+      activeFilterText: "#0E1E2A",
+      tripOffBg: "#FFFFFF",
+      tripOffText: "#0E1E2A",
+    }
+    : {
+      sheetBg: "rgba(255,255,255,0.98)",
+      sheetBorder: "#D8D8D8",
+      sheetShadow: "0 10px 28px rgba(0,0,0,0.14)",
+      iconBg: "#F1F1F1",
+      title: "#2F2F2F",
+      text: "#7A7A7A",
+      muted: "#7A7A7A",
+      nav: "#3F3F3F",
+      inactiveChipBg: "#F1F1F1",
+      inactiveChipBorder: "#D8D8D8",
+      inactiveChipText: "#3F3F3F",
+      activeFilterBg: "#233D4D",
+      activeFilterBorder: "#233D4D",
+      activeFilterText: "#FFFFFF",
+      tripOffBg: "#2FA4D7",
+      tripOffText: "#111111",
+    };
 
   useEffect(() => {
     if (flow !== "map" || loadedFrequentRouteRef.current || activeRouteIds.length > 0) return;
@@ -146,13 +187,23 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
     onFlowChange("map");
   };
 
-  const ensureTripUserId = async () => {
+  const getTripUserId = async () => {
     if (userIdRef.current) return userIdRef.current;
+    if (!supabase) return null;
+
+    const { data } = await supabase.auth.getSession();
+    const sessionUserId = data.session?.user?.id ?? null;
+    if (sessionUserId) {
+      userIdRef.current = sessionUserId;
+      return sessionUserId;
+    }
+
     const { user: guestUser, error } = await ensureGuestUser();
     if (error || !guestUser) {
-      setTripStatus(error?.message || "Unable to create guest trip profile");
+      setTripStatus(error?.message || "Trip will save without a user profile");
       return null;
     }
+
     userIdRef.current = guestUser.id;
     return guestUser.id;
   };
@@ -164,38 +215,68 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
     }
 
     if (!supabase) {
-      setActiveTripId(`local-${Date.now()}`);
+      const localTrip = {
+        id: `local-${crypto.randomUUID()}`,
+        user_id: userIdRef.current,
+        route_ids: activeRouteIds,
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        status: "active",
+      };
+      setActiveTrip(localTrip);
+      setActiveTripId(localTrip.id);
       setTripStatus("Trip started locally");
       return;
     }
 
-    const userId = await ensureTripUserId();
-    if (!userId) return;
+    const tripId = crypto.randomUUID();
+    const userId = await getTripUserId();
+    const startedAt = new Date().toISOString();
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("trip_history")
       .insert({
+        id: tripId,
         user_id: userId,
         route_ids: activeRouteIds,
-        started_at: new Date().toISOString(),
+        started_at: startedAt,
         status: "active",
-      })
-      .select("id")
-      .single();
+      });
 
     if (error) {
-      setTripStatus(error.message);
+      const fallbackTrip = {
+        id: `local-${tripId}`,
+        user_id: userId,
+        route_ids: activeRouteIds,
+        started_at: startedAt,
+        ended_at: null,
+        status: "active",
+      };
+      setActiveTrip(fallbackTrip);
+      setActiveTripId(fallbackTrip.id);
+      setTripStatus(`${error.message} - trip started locally`);
       return;
     }
 
-    setActiveTripId(data.id);
+    setActiveTrip({
+      id: tripId,
+      user_id: userId,
+      route_ids: activeRouteIds,
+      started_at: startedAt,
+      ended_at: null,
+      status: "active",
+    });
+    setActiveTripId(tripId);
     setTripStatus("Trip started");
   };
 
   const endTrip = async () => {
     if (!activeTripId) return;
+    const endedAt = new Date().toISOString();
 
     if (!supabase || activeTripId.startsWith("local-")) {
+      if (activeTrip) saveLocalCompletedTrip({ ...activeTrip, ended_at: endedAt, status: "completed" });
+      setActiveTrip(null);
       setActiveTripId(null);
       setTripStatus("Trip ended locally");
       return;
@@ -204,11 +285,13 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
     const { error } = await supabase
       .from("trip_history")
       .update({
-        ended_at: new Date().toISOString(),
+        ended_at: endedAt,
         status: "completed",
       })
       .eq("id", activeTripId);
 
+    if (activeTrip) saveLocalCompletedTrip({ ...activeTrip, ended_at: endedAt, status: "completed" });
+    setActiveTrip(null);
     setActiveTripId(null);
     setTripStatus(error ? error.message : "Trip saved to history");
   };
@@ -318,6 +401,9 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
           activeFilters={ACTIVE_FILTERS}
           activeRouteIds={activeRouteIds}
           searchedLocation={userLocation}
+          mapStyle={mapStyle}
+          offlineMode={settings.offlineMode}
+          lowDataMode={settings.lowData}
           onVehicleClick={(id) => {
             const vehicle = VEHICLES_BY_ID[id];
             if (vehicle) onVehicleSelect(vehicle);
@@ -355,24 +441,24 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
 
       <div
         className="absolute left-4 right-4 rounded-2xl p-3"
-        style={{ bottom: 18, zIndex: 40, background: "rgba(255,255,255,0.98)", border: "1px solid #D8D8D8", boxShadow: "0 10px 28px rgba(0,0,0,0.14)" }}
+        style={{ bottom: 18, zIndex: 40, background: mapUi.sheetBg, border: `1px solid ${mapUi.sheetBorder}`, boxShadow: mapUi.sheetShadow }}
       >
         <div className="flex flex-col gap-2.5">
           <div className="flex items-center gap-3">
             {activeVehicle ? (
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "#F1F1F1", color: "#3F3F3F", fontSize: 11, fontWeight: 900 }}>
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: mapUi.iconBg, color: mapUi.title, fontSize: 11, fontWeight: 900 }}>
                 <VehicleTypeIcon type={activeVehicle.type} size={24} />
               </div>
             ) : null}
             <div className="flex-1 min-w-0">
-              <p className="truncate" style={{ color: "#2F2F2F", fontSize: 14, fontWeight: 900 }}>
+              <p className="truncate" style={{ color: mapUi.title, fontSize: 14, fontWeight: 900 }}>
                 {activeVehicle ? activeVehicle.routeName : "Select Route"}
               </p>
-              <p style={{ color: "#7A7A7A", fontSize: 11, marginTop: 2 }}>
+              <p style={{ color: mapUi.text, fontSize: 11, marginTop: 2 }}>
                 {activeRouteIds.length > 1 ? `${activeRouteIds.length} routes selected` : routeSelectionStatus}
               </p>
             </div>
-            <button onClick={() => onFlowChange("routes")} style={{ color: "#3F3F3F" }} title="Open route list">
+            <button onClick={() => onFlowChange("routes")} style={{ color: mapUi.nav }} title="Open route list">
               <Navigation size={20} />
             </button>
           </div>
@@ -386,9 +472,9 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
                   onClick={() => setPickerFilter(filter.id)}
                   className="shrink-0 rounded-full px-3 py-1.5"
                   style={{
-                    background: active ? "#233D4D" : "#F1F1F1",
-                    border: active ? "1px solid #233D4D" : "1px solid #D8D8D8",
-                    color: active ? "#FFFFFF" : "#3F3F3F",
+                    background: active ? mapUi.activeFilterBg : mapUi.inactiveChipBg,
+                    border: `1px solid ${active ? mapUi.activeFilterBorder : mapUi.inactiveChipBorder}`,
+                    color: active ? mapUi.activeFilterText : mapUi.inactiveChipText,
                     fontSize: 10,
                     fontWeight: 900,
                   }}
@@ -414,8 +500,9 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
                       className="rounded-full px-2.5 py-1.5"
                       style={{
                         background: selected ? "#2FA4D7" : "#F1F1F1",
-                        border: selected ? "1px solid #2FA4D7" : "1px solid #D8D8D8",
-                        color: selected ? "#111111" : "#3F3F3F",
+                        border: `1px solid ${selected ? "#2FA4D7" : mapUi.inactiveChipBorder}`,
+                        color: selected ? "#111111" : mapUi.inactiveChipText,
+                        ...(!selected ? { background: mapUi.inactiveChipBg } : {}),
                         fontSize: 10,
                         fontWeight: 900,
                       }}
@@ -432,11 +519,11 @@ export function HomeScreen({ user, flow, activeRouteIds, isSharingLocation, user
             <button
               onClick={activeTripId ? endTrip : startTrip}
               className="shrink-0 rounded-full px-3 py-2"
-              style={{ background: activeTripId ? "#2F2F2F" : "#2FA4D7", color: activeTripId ? "#FFFFFF" : "#111111", fontSize: 11, fontWeight: 900 }}
+              style={{ background: activeTripId ? "#2F2F2F" : mapUi.tripOffBg, color: activeTripId ? "#FFFFFF" : mapUi.tripOffText, fontSize: 11, fontWeight: 900 }}
             >
               {activeTripId ? "End Trip" : "Start Trip"}
             </button>
-            <p className="truncate" style={{ color: "#7A7A7A", fontSize: 10, lineHeight: 1.35 }}>
+            <p className="truncate" style={{ color: mapUi.muted, fontSize: 10, lineHeight: 1.35 }}>
               {tripStatus} - {locationStatus}
             </p>
           </div>

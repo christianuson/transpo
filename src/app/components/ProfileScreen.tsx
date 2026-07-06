@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { Briefcase, ChevronRight, Clock, GraduationCap, Heart, LogOut, MapPin, Settings, Wrench } from "lucide-react";
+import { Briefcase, ChevronRight, Clock, GraduationCap, Heart, LogOut, MapPin, Pencil, Settings, Wrench } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
-import type { ProfileRecord } from "../lib/supabase";
+import { supabase, type ProfileRecord } from "../lib/supabase";
+import { mergeTripHistory, readLocalTripHistory, type TripHistoryRecord } from "../lib/tripHistory";
+import { GOLDEN_ROUTE_VEHICLES } from "../data/routes";
 import { UserLocationSharing } from "./UserLocationSharing";
 
 interface Props {
@@ -31,20 +33,102 @@ const TRANSPORT_PREFS = [
   { id: "uvexpress", label: "UV Express" },
 ];
 
+const ROUTE_NAME_BY_ID = new Map(GOLDEN_ROUTE_VEHICLES.map((route) => [route.id, route.routeName]));
+
+function formatTripDate(value: string | null) {
+  if (!value) return "In progress";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function tripDuration(startedAt: string, endedAt: string | null) {
+  if (!endedAt) return "Active";
+  const minutes = Math.max(1, Math.round((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 60000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
 export function ProfileScreen({ user, isGuest, profile, isSharingLocation, userLocation, locationStatus, onToggleLocationSharing, onSettings, onSaveProfile, onSignOut }: Props) {
   const [selectedRole, setSelectedRole] = useState("commuter");
   const [selectedTransport, setSelectedTransport] = useState(["jeepney", "train"]);
   const [showHistory, setShowHistory] = useState(false);
   const [draftName, setDraftName] = useState(profile?.full_name || "Guest User");
   const [saveStatus, setSaveStatus] = useState("");
+  const [tripHistory, setTripHistory] = useState<TripHistoryRecord[]>([]);
+  const [tripHistoryStatus, setTripHistoryStatus] = useState("");
 
   const displayName = profile?.full_name || draftName || "Guest User";
   const email = profile?.email || user?.email || (isGuest ? "Guest session" : "Connect with Google");
   const avatarUrl = profile?.avatar_url || user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
+  const profileUserId = profile?.id || user?.id || null;
+  const savedName = profile?.full_name || "Guest User";
+  const nameChanged = draftName.trim() !== savedName;
 
   useEffect(() => {
     setDraftName(profile?.full_name || "Guest User");
   }, [profile?.full_name]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTripHistory() {
+      const localTrips = readLocalTripHistory();
+
+      if (!supabase) {
+        const mergedTrips = mergeTripHistory(localTrips).slice(0, 3);
+        setTripHistory(mergedTrips);
+        setTripHistoryStatus(mergedTrips.length ? "" : "No completed trips yet.");
+        return;
+      }
+
+      let userId = profileUserId;
+      if (!userId) {
+        const { data } = await supabase.auth.getSession();
+        userId = data.session?.user?.id ?? null;
+      }
+
+      if (!userId) {
+        const mergedTrips = mergeTripHistory(localTrips).slice(0, 3);
+        setTripHistory(mergedTrips);
+        setTripHistoryStatus(mergedTrips.length ? "" : "No completed trips on this device yet.");
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("trip_history")
+        .select("id,route_ids,started_at,ended_at,status")
+        .eq("user_id", userId)
+        .eq("status", "completed")
+        .not("ended_at", "is", null)
+        .order("ended_at", { ascending: false })
+        .limit(3);
+
+      if (cancelled) return;
+
+      if (error) {
+        const mergedTrips = mergeTripHistory(localTrips).slice(0, 3);
+        setTripHistory(mergedTrips);
+        setTripHistoryStatus(mergedTrips.length ? "" : error.message);
+        return;
+      }
+
+      const mergedTrips = mergeTripHistory((data || []) as TripHistoryRecord[], localTrips).slice(0, 3);
+      setTripHistory(mergedTrips);
+      setTripHistoryStatus(mergedTrips.length ? "" : "No completed trips yet.");
+    }
+
+    void loadTripHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [profileUserId]);
 
   const toggleTransport = (id: string) => {
     setSelectedTransport((prev) =>
@@ -102,32 +186,41 @@ export function ProfileScreen({ user, isGuest, profile, isSharingLocation, userL
             <span style={{ color: "#4A6070", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>
               Display Name
             </span>
-            <input
-              value={draftName}
-              onChange={(event) => {
-                setDraftName(event.target.value);
-                setSaveStatus("");
-              }}
-              placeholder="Guest User"
-              style={{
-                width: "100%",
-                background: "#233D4D",
-                border: "1px solid #1C3344",
-                borderRadius: 12,
-                color: "#EAECF0",
-                padding: "12px 14px",
-                fontSize: 14,
-                outline: "none",
-              }}
-            />
+            <div className="relative">
+              <input
+                value={draftName}
+                onChange={(event) => {
+                  setDraftName(event.target.value);
+                  setSaveStatus("");
+                }}
+                placeholder="Guest User"
+                style={{
+                  width: "100%",
+                  background: "#233D4D",
+                  border: "1px solid #1C3344",
+                  borderRadius: 12,
+                  color: "#EAECF0",
+                  padding: "12px 42px 12px 14px",
+                  fontSize: 14,
+                  outline: "none",
+                }}
+              />
+              <Pencil
+                size={16}
+                color={nameChanged ? "#2FA4D7" : "#8899A8"}
+                className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"
+              />
+            </div>
           </label>
-          <button
-            onClick={saveChanges}
-            className="w-full mt-3 py-3 rounded-xl"
-            style={{ background: "#2FA4D7", color: "#000", fontSize: 14, fontWeight: 800 }}
-          >
-            Save Changes
-          </button>
+          {nameChanged && (
+            <button
+              onClick={saveChanges}
+              className="w-full mt-3 py-3 rounded-xl"
+              style={{ background: "#2FA4D7", color: "#000", fontSize: 14, fontWeight: 800 }}
+            >
+              Save Changes
+            </button>
+          )}
           {saveStatus && (
             <p style={{ color: "#8899A8", fontSize: 11, marginTop: 8, lineHeight: 1.4 }}>{saveStatus}</p>
           )}
@@ -135,7 +228,7 @@ export function ProfileScreen({ user, isGuest, profile, isSharingLocation, userL
 
         <div className="w-full flex rounded-2xl overflow-hidden mt-2" style={{ background: "#0E1E2A", border: "1px solid #1C3344" }}>
           {[
-            { label: "Trips", value: "0" },
+            { label: "Trips", value: String(tripHistory.length) },
             { label: "Routes", value: "0" },
             { label: "Km Saved", value: "0" },
           ].map(({ label, value }, i, arr) => (
@@ -220,10 +313,36 @@ export function ProfileScreen({ user, isGuest, profile, isSharingLocation, userL
         </button>
 
         {showHistory && (
-          <div className="mt-2 p-3 rounded-xl" style={{ background: "#0A1520", border: "1px solid #1C3344" }}>
-            <span style={{ color: "#8899A8", fontSize: 12 }}>
-              Trip history will appear here after user trips are persisted.
-            </span>
+          <div className="mt-2 flex flex-col gap-2">
+            {tripHistory.length > 0 ? tripHistory.map((trip) => {
+              const routeNames = trip.route_ids
+                .map((routeId) => ROUTE_NAME_BY_ID.get(routeId) || routeId)
+                .join(" + ");
+
+              return (
+                <div key={trip.id} className="p-3 rounded-xl" style={{ background: "#0A1520", border: "1px solid #1C3344" }}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p style={{ color: "#EAECF0", fontSize: 13, fontWeight: 800, lineHeight: 1.35 }}>
+                        {routeNames || "Unnamed route"}
+                      </p>
+                      <p style={{ color: "#4A6070", fontSize: 11, marginTop: 5 }}>
+                        Ended {formatTripDate(trip.ended_at)}
+                      </p>
+                    </div>
+                    <span className="shrink-0" style={{ color: "#2FA4D7", fontSize: 12, fontWeight: 900 }}>
+                      {tripDuration(trip.started_at, trip.ended_at)}
+                    </span>
+                  </div>
+                </div>
+              );
+            }) : (
+              <div className="p-3 rounded-xl" style={{ background: "#0A1520", border: "1px solid #1C3344" }}>
+                <span style={{ color: "#8899A8", fontSize: 12 }}>
+                  {tripHistoryStatus || "No completed trips yet."}
+                </span>
+              </div>
+            )}
           </div>
         )}
       </div>

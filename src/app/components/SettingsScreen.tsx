@@ -1,43 +1,26 @@
-import { useState } from "react";
-import { ChevronLeft, Bell, Wifi, Map, Moon, ChevronRight, Info, HelpCircle, MessageSquare, Smartphone } from "lucide-react";
+import { ChevronLeft, Bell, Wifi, ChevronRight, Info, HelpCircle, MessageSquare, Smartphone } from "lucide-react";
+import type { AppSettings } from "../App";
 
 interface Props {
   onBack: () => void;
+  mapStyle: "dark" | "light";
+  onMapStyleChange: (style: "dark" | "light") => void;
+  settings: AppSettings;
+  onSettingChange: (id: keyof AppSettings, value: boolean) => void;
 }
 
-interface ToggleSetting {
-  id: string;
-  label: string;
-  desc: string;
-  value: boolean;
-}
-
-export function SettingsScreen({ onBack }: Props) {
-  const [mapStyle, setMapStyle] = useState<"dark" | "light">("dark");
-  const [toggles, setToggles] = useState<Record<string, boolean>>({
-    arriving: true,
-    seatUpdate: true,
-    savedRoute: false,
-    offlineMode: false,
-    lowData: false,
-    locationBg: true,
-  });
-
-  const setToggle = (id: string, val: boolean) => {
-    setToggles((t) => ({ ...t, [id]: val }));
-  };
-
-  const Toggle = ({ id }: { id: string }) => (
+export function SettingsScreen({ onBack, mapStyle, onMapStyleChange, settings, onSettingChange }: Props) {
+  const Toggle = ({ id }: { id: keyof AppSettings }) => (
     <button
-      onClick={() => setToggle(id, !toggles[id])}
+      onClick={() => onSettingChange(id, !settings[id])}
       className="w-12 h-6 rounded-full relative shrink-0"
-      style={{ background: toggles[id] ? "#2FA4D7" : "#233D4D", transition: "background 0.2s" }}
+      style={{ background: settings[id] ? "#2FA4D7" : "#233D4D", transition: "background 0.2s" }}
     >
       <div
         className="absolute top-0.5 w-5 h-5 rounded-full"
         style={{
           background: "#fff",
-          left: toggles[id] ? "calc(100% - 22px)" : 2,
+          left: settings[id] ? "calc(100% - 22px)" : 2,
           transition: "left 0.2s",
         }}
       />
@@ -109,14 +92,14 @@ export function SettingsScreen({ onBack }: Props) {
         <Section title="Connectivity">
           <Row
             icon={Wifi}
-            label="Offline / Low-Data Mode"
-            desc="Reduce data use on slow networks"
+            label="Offline Mode"
+            desc="Show only selected routes and stations"
             right={<Toggle id="offlineMode" />}
           />
           <Row
             icon={Smartphone}
-            label="Low-Data Map Tiles"
-            desc="Simplified map when offline"
+            label="Low-Data Mode"
+            desc="Fetch vehicles only; hide hotspots"
             right={<Toggle id="lowData" />}
           />
           <Row
@@ -134,7 +117,7 @@ export function SettingsScreen({ onBack }: Props) {
               {(["dark", "light"] as const).map((style) => (
                 <button
                   key={style}
-                  onClick={() => setMapStyle(style)}
+                  onClick={() => onMapStyleChange(style)}
                   className="flex-1 flex flex-col items-center gap-2 p-3 rounded-xl"
                   style={{
                     background: mapStyle === style ? "#2FA4D722" : "#233D4D",

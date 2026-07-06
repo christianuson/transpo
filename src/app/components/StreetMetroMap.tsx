@@ -63,6 +63,9 @@ interface Props {
   activeRouteId?: string | null;
   activeRouteIds?: string[];
   searchedLocation: SearchedLocation | null;
+  mapStyle: "dark" | "light";
+  offlineMode: boolean;
+  lowDataMode: boolean;
   onVehicleClick: (vehicleId: string) => void;
 }
 
@@ -138,7 +141,7 @@ function hotspotStyle(level?: StopHotspot["crowd_level"]) {
   return { radius: 6, color: "#16a34a" };
 }
 
-export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, activeRouteIds, searchedLocation, onVehicleClick }: Props) {
+export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, activeRouteIds, searchedLocation, mapStyle, offlineMode, lowDataMode, onVehicleClick }: Props) {
   const selectedRouteIds = activeRouteIds?.length ? activeRouteIds : activeRouteId ? [activeRouteId] : [];
   const selectedRouteKey = selectedRouteIds.join("|");
   const activeFilterKey = activeFilters.join("|");
@@ -147,9 +150,15 @@ export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, acti
     .filter((route): route is TransitRoute => Boolean(route) && activeFilters.includes(route.vehicleType)), [activeFilterKey, selectedRouteKey]);
   const [vehicleTelemetry, setVehicleTelemetry] = useState<VehicleTelemetry[]>([]);
   const [hotspots, setHotspots] = useState<Record<string, StopHotspot>>({});
+  const tileUrl = lowDataMode
+    ? "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
+    : mapStyle === "dark"
+    ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+    : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+  const tileClassName = lowDataMode ? "grayscale contrast-75 brightness-105" : mapStyle === "dark" ? "brightness-110 contrast-90" : "grayscale contrast-75 brightness-110";
 
   useEffect(() => {
-    if (!supabase || !selectedRouteIds.length) {
+    if (!supabase || !selectedRouteIds.length || offlineMode) {
       setVehicleTelemetry([]);
       return;
     }
@@ -182,10 +191,13 @@ export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, acti
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [selectedRouteKey]);
+  }, [selectedRouteKey, offlineMode]);
 
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase || offlineMode || lowDataMode) {
+      setHotspots({});
+      return;
+    }
 
     let cancelled = false;
 
@@ -232,7 +244,7 @@ export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, acti
       cancelled = true;
       void supabase.removeChannel(channel);
     };
-  }, []);
+  }, [offlineMode, lowDataMode]);
 
   return (
     <MapContainer
@@ -244,15 +256,18 @@ export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, acti
       zoomControl={false}
       attributionControl={false}
       className="h-full w-full"
-      style={{ background: "#F8F8F8", zIndex: 0 }}
+      style={{ background: mapStyle === "dark" ? "#0B1C28" : "#F8F8F8", zIndex: 0 }}
     >
-      <TileLayer
-        attribution="OpenStreetMap contributors"
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        className="grayscale contrast-75 brightness-110"
-      />
+      {!offlineMode && (
+        <TileLayer
+          key={`${mapStyle}-${lowDataMode ? "low" : "full"}`}
+          attribution={mapStyle === "dark" || lowDataMode ? "OpenStreetMap contributors, CARTO" : "OpenStreetMap contributors"}
+          url={tileUrl}
+          className={tileClassName}
+        />
+      )}
 
-      {selectedRouteIds.length > 0 && showHeatmap && HEAT_SPOTS.map((spot, index) => (
+      {selectedRouteIds.length > 0 && showHeatmap && !offlineMode && !lowDataMode && HEAT_SPOTS.map((spot, index) => (
         <Circle
           key={`${spot.color}-${index}`}
           center={spot.center}
@@ -280,7 +295,7 @@ export function StreetMetroMap({ showHeatmap, activeFilters, activeRouteId, acti
         );
       })}
 
-      {activeRoutes.flatMap((route) => {
+      {!offlineMode && activeRoutes.flatMap((route) => {
         const routeVehicles = vehicleTelemetry.filter((vehicle) => vehicle.route_id === route.id);
 
         if (!routeVehicles.length) {

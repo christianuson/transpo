@@ -49,6 +49,38 @@ type AppTab = "home" | "routes" | "notifications" | "saved" | "profile";
 type SubScreen = null | "tracking" | "settings";
 type HomeFlow = "prompt" | "map" | "routes";
 const GPS_SHARING_KEY = "transpo_gps_sharing_enabled";
+const MAP_STYLE_KEY = "transpo_map_style";
+const APP_SETTINGS_KEY = "transpo_app_settings";
+type MapStyle = "dark" | "light";
+
+export interface AppSettings {
+  arriving: boolean;
+  seatUpdate: boolean;
+  savedRoute: boolean;
+  offlineMode: boolean;
+  lowData: boolean;
+  locationBg: boolean;
+}
+
+const DEFAULT_APP_SETTINGS: AppSettings = {
+  arriving: true,
+  seatUpdate: true,
+  savedRoute: false,
+  offlineMode: false,
+  lowData: false,
+  locationBg: true,
+};
+
+function loadAppSettings() {
+  const stored = localStorage.getItem(APP_SETTINGS_KEY);
+  if (!stored) return DEFAULT_APP_SETTINGS;
+
+  try {
+    return { ...DEFAULT_APP_SETTINGS, ...JSON.parse(stored) } as AppSettings;
+  } catch {
+    return DEFAULT_APP_SETTINGS;
+  }
+}
 
 interface SharedLocation {
   lat: number;
@@ -68,6 +100,8 @@ export default function App() {
   const [profile, setProfile] = useState<ProfileRecord | null>(null);
   const [authError, setAuthError] = useState("");
   const [isSharingLocation, setIsSharingLocation] = useState(() => localStorage.getItem(GPS_SHARING_KEY) === "true");
+  const [mapStyle, setMapStyle] = useState<MapStyle>(() => localStorage.getItem(MAP_STYLE_KEY) === "light" ? "light" : "dark");
+  const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings);
   const [sharedLocation, setSharedLocation] = useState<SharedLocation | null>(null);
   const [locationStatus, setLocationStatus] = useState("GPS sharing is off");
   const watchIdRef = useRef<number | null>(null);
@@ -259,6 +293,26 @@ export default function App() {
     localStorage.removeItem(GPS_SHARING_KEY);
   };
 
+  const handleMapStyleChange = (style: MapStyle) => {
+    setMapStyle(style);
+    localStorage.setItem(MAP_STYLE_KEY, style);
+  };
+
+  const handleSettingChange = (id: keyof AppSettings, value: boolean) => {
+    const nextSettings = { ...appSettings, [id]: value };
+    setAppSettings(nextSettings);
+    localStorage.setItem(APP_SETTINGS_KEY, JSON.stringify(nextSettings));
+
+    if (id === "locationBg") {
+      if (value) void startLocationSharing();
+      else stopLocationSharing();
+    }
+  };
+
+  const handleLocationSharingToggle = () => {
+    handleSettingChange("locationBg", !isSharingLocation);
+  };
+
   useEffect(() => {
     if (isSharingLocation && watchIdRef.current === null) {
       void startLocationSharing();
@@ -303,7 +357,13 @@ export default function App() {
       {subScreen === "tracking" && selectedVehicle ? (
         <LiveTrackingScreen vehicle={selectedVehicle} onBack={() => setSubScreen(null)} />
       ) : subScreen === "settings" ? (
-        <SettingsScreen onBack={() => setSubScreen(null)} />
+        <SettingsScreen
+          onBack={() => setSubScreen(null)}
+          mapStyle={mapStyle}
+          onMapStyleChange={handleMapStyleChange}
+          settings={appSettings}
+          onSettingChange={handleSettingChange}
+        />
       ) : (
         <>
           <div className="flex-1 overflow-hidden">
@@ -315,9 +375,11 @@ export default function App() {
                 isSharingLocation={isSharingLocation}
                 userLocation={sharedLocation}
                 locationStatus={locationStatus}
+                mapStyle={mapStyle}
+                settings={appSettings}
                 onFlowChange={setHomeFlow}
                 onActiveRouteIdsChange={setHomeActiveRouteIds}
-                onToggleLocationSharing={isSharingLocation ? stopLocationSharing : startLocationSharing}
+                onToggleLocationSharing={handleLocationSharingToggle}
                 onVehicleSelect={(v) => { setSelectedVehicle(v); setSubScreen("tracking"); }}
               />
             )}
@@ -331,7 +393,7 @@ export default function App() {
                 }}
               />
             )}
-            {activeTab === "notifications" && <NotificationsScreen activeRouteIds={homeActiveRouteIds} />}
+            {activeTab === "notifications" && <NotificationsScreen activeRouteIds={homeActiveRouteIds} settings={appSettings} />}
             {activeTab === "saved" && (
               <SavedRoutesScreen
                 activeRouteIds={homeActiveRouteIds}
@@ -350,7 +412,7 @@ export default function App() {
                 isSharingLocation={isSharingLocation}
                 userLocation={sharedLocation}
                 locationStatus={locationStatus}
-                onToggleLocationSharing={isSharingLocation ? stopLocationSharing : startLocationSharing}
+                onToggleLocationSharing={handleLocationSharingToggle}
                 onSettings={() => setSubScreen("settings")}
                 onSaveProfile={handleSaveProfile}
                 onSignOut={handleSignOut}
