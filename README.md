@@ -10,8 +10,30 @@ React + Vite prototype for live Metro Manila route selection, vehicle telemetry,
 
 ## Setup
 
+Install the project dependencies:
+
 ```bash
 npm install --legacy-peer-deps
+```
+
+Use `--legacy-peer-deps` for this project because some React ecosystem packages have strict peer dependency checks.
+
+If a fresh machine is missing specific runtime packages, install the app dependencies with:
+
+```bash
+npm install --legacy-peer-deps @supabase/supabase-js leaflet react-leaflet leaflet.markercluster react-leaflet-cluster lucide-react
+```
+
+For GPS and future mobile builds, install the Capacitor packages with:
+
+```bash
+npm install --legacy-peer-deps @capacitor/core @capacitor/cli @capacitor/android @capacitor/geolocation
+```
+
+If Vite or Tailwind tooling is missing, install the dev tooling with:
+
+```bash
+npm install --legacy-peer-deps -D vite @vitejs/plugin-react @tailwindcss/vite tailwindcss postcss autoprefixer
 ```
 
 Create `.env.local` in the project root:
@@ -56,6 +78,12 @@ http://localhost:5173
 ```
 
 If another local project is already using that port, Vite will choose another one.
+
+If dependencies get out of sync after switching branches or pulling changes, repair them with:
+
+```bash
+npm install --legacy-peer-deps
+```
 
 ## Run The Traffic Simulator
 
